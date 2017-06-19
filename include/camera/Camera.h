@@ -19,8 +19,6 @@
 
 #include <utils/Timers.h>
 
-#include <android/hardware/ICameraService.h>
-
 #include <gui/IGraphicBufferProducer.h>
 #include <system/camera.h>
 #include <camera/ICameraRecordingProxy.h>
