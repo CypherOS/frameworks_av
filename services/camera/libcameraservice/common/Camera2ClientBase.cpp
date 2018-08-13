@@ -48,16 +48,15 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         const sp<TCamCallbacks>& remoteCallback,
         const String16& clientPackageName,
         const String8& cameraId,
-        int api1CameraId,
         int cameraFacing,
         int clientPid,
         uid_t clientUid,
         int servicePid):
         TClientBase(cameraService, remoteCallback, clientPackageName,
-                cameraId, api1CameraId, cameraFacing, clientPid, clientUid, servicePid),
+                cameraId, cameraFacing, clientPid, clientUid, servicePid),
         mSharedCameraCallbacks(remoteCallback),
         mDeviceVersion(cameraService->getDeviceVersion(TClientBase::mCameraIdStr)),
-        mDeviceActive(false), mApi1CameraId(api1CameraId)
+        mDeviceActive(false)
 {
     ALOGI("Camera %s: Opened. Client: %s (PID %d, UID %d)", cameraId.string(),
             String8(clientPackageName).string(), clientPid, clientUid);
@@ -253,9 +252,7 @@ void Camera2ClientBase<TClientBase>::notifyIdle() {
     if (mDeviceActive) {
         getCameraService()->updateProxyDeviceState(
             hardware::ICameraServiceProxy::CAMERA_STATE_IDLE, TClientBase::mCameraIdStr,
-            TClientBase::mCameraFacing, TClientBase::mClientPackageName,
-            ((mApi1CameraId < 0) ? hardware::ICameraServiceProxy::CAMERA_API_LEVEL_2 :
-             hardware::ICameraServiceProxy::CAMERA_API_LEVEL_1));
+            TClientBase::mCameraFacing, TClientBase::mClientPackageName);
     }
     mDeviceActive = false;
 
@@ -271,9 +268,7 @@ void Camera2ClientBase<TClientBase>::notifyShutter(const CaptureResultExtras& re
     if (!mDeviceActive) {
         getCameraService()->updateProxyDeviceState(
             hardware::ICameraServiceProxy::CAMERA_STATE_ACTIVE, TClientBase::mCameraIdStr,
-            TClientBase::mCameraFacing, TClientBase::mClientPackageName,
-            ((mApi1CameraId < 0) ? hardware::ICameraServiceProxy::CAMERA_API_LEVEL_2 :
-             hardware::ICameraServiceProxy::CAMERA_API_LEVEL_1));
+            TClientBase::mCameraFacing, TClientBase::mClientPackageName);
     }
     mDeviceActive = true;
 
@@ -336,7 +331,7 @@ void Camera2ClientBase<TClientBase>::notifyRepeatingRequestError(long lastFrameN
 
 template <typename TClientBase>
 int Camera2ClientBase<TClientBase>::getCameraId() const {
-    return mApi1CameraId;
+    return std::stoi(TClientBase::mCameraIdStr.string());
 }
 
 template <typename TClientBase>

@@ -19,6 +19,7 @@
 
 #include <gui/GLConsumer.h>
 #include <gui/Surface.h>
+#include <hardware/camera_common.h>
 #include <utils/KeyedVector.h>
 #include <utils/SortedVector.h>
 #include "common/CameraProviderManager.h"
@@ -54,7 +55,7 @@ class FlashControlBase : public virtual VirtualLightRefBase {
 class CameraFlashlight : public virtual VirtualLightRefBase {
     public:
         CameraFlashlight(sp<CameraProviderManager> providerManager,
-                CameraProviderManager::StatusListener* callbacks);
+                camera_module_callbacks_t* callbacks);
         virtual ~CameraFlashlight();
 
         // Find all flash units. This must be called before other methods. All
@@ -92,11 +93,13 @@ class CameraFlashlight : public virtual VirtualLightRefBase {
         // opening cameras)
         bool isBackwardCompatibleMode(const String8& cameraId);
 
+        int getNumberOfCameras();
+
         sp<FlashControlBase> mFlashControl;
 
         sp<CameraProviderManager> mProviderManager;
 
-        CameraProviderManager::StatusListener* mCallbacks;
+        const camera_module_callbacks_t *mCallbacks;
         SortedVector<String8> mOpenedCameraIds;
 
         // camera id -> if it has a flash unit
@@ -131,7 +134,7 @@ class CameraHardwareInterfaceFlashControl : public FlashControlBase {
     public:
         CameraHardwareInterfaceFlashControl(
                 sp<CameraProviderManager> manager,
-                CameraProviderManager::StatusListener* callbacks);
+                const camera_module_callbacks_t& callbacks);
         virtual ~CameraHardwareInterfaceFlashControl();
 
         // FlashControlBase
@@ -163,7 +166,7 @@ class CameraHardwareInterfaceFlashControl : public FlashControlBase {
         status_t hasFlashUnitLocked(const String8& cameraId, bool *hasFlash, bool keepDeviceOpen);
 
         sp<CameraProviderManager> mProviderManager;
-        CameraProviderManager::StatusListener* mCallbacks;
+        const camera_module_callbacks_t *mCallbacks;
         sp<CameraHardwareInterface> mDevice;
         String8 mCameraId;
         CameraParameters mParameters;

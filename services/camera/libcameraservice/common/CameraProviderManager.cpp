@@ -20,13 +20,11 @@
 
 #include "CameraProviderManager.h"
 
-#include <algorithm>
 #include <chrono>
 #include <inttypes.h>
 #include <hidl/ServiceManagement.h>
 #include <functional>
 #include <camera_metadata_hidden.h>
-#include <android-base/parseint.h>
 
 namespace android {
 
@@ -38,6 +36,9 @@ namespace {
 // service manager
 const std::string kLegacyProviderName("legacy/0");
 const std::string kExternalProviderName("external/0");
+
+// Slash-separated list of provider types to consider for use via the old camera API
+const std::string kStandardProviderTypes("internal/legacy");
 
 } // anonymous namespace
 
@@ -78,7 +79,18 @@ int CameraProviderManager::getCameraCount() const {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
     int count = 0;
     for (auto& provider : mProviders) {
-        count += provider->mUniqueCameraIds.size();
+        count += provider->mUniqueDeviceCount;
+    }
+    return count;
+}
+
+int CameraProviderManager::getAPI1CompatibleCameraCount() const {
+    std::lock_guard<std::mutex> lock(mInterfaceMutex);
+    int count = 0;
+    for (auto& provider : mProviders) {
+        if (kStandardProviderTypes.find(provider->getType()) != std::string::npos) {
+            count += provider->mUniqueAPI1CompatibleCameraIds.size();
+        }
     }
     return count;
 }
@@ -98,33 +110,12 @@ std::vector<std::string> CameraProviderManager::getAPI1CompatibleCameraDeviceIds
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
     std::vector<std::string> deviceIds;
     for (auto& provider : mProviders) {
-        std::vector<std::string> providerDeviceIds = provider->mUniqueAPI1CompatibleCameraIds;
-
-        // API1 app doesn't handle logical and physical camera devices well. So
-        // for each [logical, physical1, physical2, ...] id combo, only take the
-        // first id advertised by HAL, and filter out the rest.
-        filterLogicalCameraIdsLocked(providerDeviceIds);
-
-        deviceIds.insert(deviceIds.end(), providerDeviceIds.begin(), providerDeviceIds.end());
+        if (kStandardProviderTypes.find(provider->getType()) != std::string::npos) {
+            for (auto& id : provider->mUniqueAPI1CompatibleCameraIds) {
+                deviceIds.push_back(id);
+            }
+        }
     }
-
-    std::sort(deviceIds.begin(), deviceIds.end(),
-            [](const std::string& a, const std::string& b) -> bool {
-                uint32_t aUint = 0, bUint = 0;
-                bool aIsUint = base::ParseUint(a, &aUint);
-                bool bIsUint = base::ParseUint(b, &bUint);
-
-                // Uint device IDs first
-                if (aIsUint && bIsUint) {
-                    return aUint < bUint;
-                } else if (aIsUint) {
-                    return true;
-                } else if (bIsUint) {
-                    return false;
-                }
-                // Simple string compare if both id are not uint
-                return a < b;
-            });
     return deviceIds;
 }
 
@@ -177,7 +168,11 @@ status_t CameraProviderManager::getCameraInfo(const std::string &id,
 status_t CameraProviderManager::getCameraCharacteristics(const std::string &id,
         CameraMetadata* characteristics) const {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
-    return getCameraCharacteristicsLocked(id, characteristics);
+
+    auto deviceInfo = findDeviceInfoLocked(id, /*minVersion*/ {3,0}, /*maxVersion*/ {4,0});
+    if (deviceInfo == nullptr) return NAME_NOT_FOUND;
+
+    return deviceInfo->getCameraCharacteristics(characteristics);
 }
 
 status_t CameraProviderManager::getHighestSupportedVersion(const std::string &id,
@@ -392,37 +387,6 @@ metadata_vendor_id_t CameraProviderManager::getProviderTagIdLocked(
     return ret;
 }
 
-bool CameraProviderManager::isLogicalCamera(const CameraMetadata& staticInfo,
-        std::vector<std::string>* physicalCameraIds) {
-    bool isLogicalCam = false;
-    camera_metadata_ro_entry_t entryCap;
-
-    entryCap = staticInfo.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
-    for (size_t i = 0; i < entryCap.count; ++i) {
-        uint8_t capability = entryCap.data.u8[i];
-        if (capability == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) {
-            isLogicalCam = true;
-            break;
-        }
-    }
-    if (!isLogicalCam) {
-        return false;
-    }
-
-    camera_metadata_ro_entry_t entryIds = staticInfo.find(ANDROID_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS);
-    const uint8_t* ids = entryIds.data.u8;
-    size_t start = 0;
-    for (size_t i = 0; i < entryIds.count; ++i) {
-        if (ids[i] == '\0') {
-            if (start != i) {
-                physicalCameraIds->push_back((const char*)ids+start);
-            }
-            start = i+1;
-        }
-    }
-    return true;
-}
-
 status_t CameraProviderManager::addProviderLocked(const std::string& newProvider, bool expected) {
     for (const auto& providerInfo : mProviders) {
         if (providerInfo->mProviderName == newProvider) {
@@ -516,8 +480,6 @@ status_t CameraProviderManager::ProviderInfo::initialize() {
     }
     ALOGI("Connecting to new camera provider: %s, isRemote? %d",
             mProviderName.c_str(), mInterface->isRemote());
-    // cameraDeviceStatusChange callbacks may be called (and causing new devices added)
-    // before setCallback returns
     hardware::Return<Status> status = mInterface->setCallback(this);
     if (!status.isOk()) {
         ALOGE("%s: Transaction error setting up callbacks with camera provider '%s': %s",
@@ -574,10 +536,17 @@ status_t CameraProviderManager::ProviderInfo::initialize() {
         }
     }
 
+    for (auto& device : mDevices) {
+        mUniqueCameraIds.insert(device->mId);
+        if (device->isAPI1Compatible()) {
+            mUniqueAPI1CompatibleCameraIds.insert(device->mId);
+        }
+    }
+    mUniqueDeviceCount = mUniqueCameraIds.size();
+
     ALOGI("Camera provider %s ready with %zu camera devices",
             mProviderName.c_str(), mDevices.size());
 
-    mInitialized = true;
     return OK;
 }
 
@@ -625,34 +594,13 @@ status_t CameraProviderManager::ProviderInfo::addDevice(const std::string& name,
     }
     if (deviceInfo == nullptr) return BAD_VALUE;
     deviceInfo->mStatus = initialStatus;
-    bool isAPI1Compatible = deviceInfo->isAPI1Compatible();
 
     mDevices.push_back(std::move(deviceInfo));
-
-    mUniqueCameraIds.insert(id);
-    if (isAPI1Compatible) {
-        mUniqueAPI1CompatibleCameraIds.push_back(id);
-    }
 
     if (parsedId != nullptr) {
         *parsedId = id;
     }
     return OK;
-}
-
-void CameraProviderManager::ProviderInfo::removeDevice(std::string id) {
-    for (auto it = mDevices.begin(); it != mDevices.end(); it++) {
-        if ((*it)->mId == id) {
-            mUniqueCameraIds.erase(id);
-            if ((*it)->isAPI1Compatible()) {
-                mUniqueAPI1CompatibleCameraIds.erase(std::remove(
-                        mUniqueAPI1CompatibleCameraIds.begin(),
-                        mUniqueAPI1CompatibleCameraIds.end(), id));
-            }
-            mDevices.erase(it);
-            break;
-        }
-    }
 }
 
 status_t CameraProviderManager::ProviderInfo::dump(int fd, const Vector<String16>&) const {
@@ -714,7 +662,6 @@ hardware::Return<void> CameraProviderManager::ProviderInfo::cameraDeviceStatusCh
         CameraDeviceStatus newStatus) {
     sp<StatusListener> listener;
     std::string id;
-    bool initialized = false;
     {
         std::lock_guard<std::mutex> lock(mLock);
         bool known = false;
@@ -737,17 +684,11 @@ hardware::Return<void> CameraProviderManager::ProviderInfo::cameraDeviceStatusCh
                 return hardware::Void();
             }
             addDevice(cameraDeviceName, newStatus, &id);
-        } else if (newStatus == CameraDeviceStatus::NOT_PRESENT) {
-            removeDevice(id);
         }
         listener = mManager->getStatusListener();
-        initialized = mInitialized;
     }
     // Call without lock held to allow reentrancy into provider manager
-    // Don't send the callback if providerInfo hasn't been initialized.
-    // CameraService will initialize device status after provider is
-    // initialized
-    if (listener != nullptr && initialized) {
+    if (listener != nullptr) {
         listener->onDeviceStatusChanged(String8(id.c_str()), newStatus);
     }
     return hardware::Void();
@@ -1451,51 +1392,5 @@ status_t HidlVendorTagDescriptor::createDescriptorFromHidl(
     return OK;
 }
 
-status_t CameraProviderManager::getCameraCharacteristicsLocked(const std::string &id,
-        CameraMetadata* characteristics) const {
-    auto deviceInfo = findDeviceInfoLocked(id, /*minVersion*/ {3,0}, /*maxVersion*/ {4,0});
-    if (deviceInfo == nullptr) return NAME_NOT_FOUND;
-
-    return deviceInfo->getCameraCharacteristics(characteristics);
-}
-
-void CameraProviderManager::filterLogicalCameraIdsLocked(
-        std::vector<std::string>& deviceIds) const
-{
-    std::unordered_set<std::string> removedIds;
-
-    for (auto& deviceId : deviceIds) {
-        CameraMetadata info;
-        status_t res = getCameraCharacteristicsLocked(deviceId, &info);
-        if (res != OK) {
-            ALOGE("%s: Failed to getCameraCharacteristics for id %s", __FUNCTION__,
-                    deviceId.c_str());
-            return;
-        }
-
-        // idCombo contains the ids of a logical camera and its physical cameras
-        std::vector<std::string> idCombo;
-        bool logicalCamera = CameraProviderManager::isLogicalCamera(info, &idCombo);
-        if (!logicalCamera) {
-            continue;
-        }
-        idCombo.push_back(deviceId);
-
-        for (auto& id : deviceIds) {
-            auto foundId = std::find(idCombo.begin(), idCombo.end(), id);
-            if (foundId == idCombo.end()) {
-                continue;
-            }
-
-            idCombo.erase(foundId);
-            removedIds.insert(idCombo.begin(), idCombo.end());
-            break;
-        }
-    }
-
-    deviceIds.erase(std::remove_if(deviceIds.begin(), deviceIds.end(),
-            [&removedIds](const std::string& s) {return removedIds.find(s) != removedIds.end();}),
-            deviceIds.end());
-}
 
 } // namespace android

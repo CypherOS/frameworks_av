@@ -18,7 +18,7 @@
 #define ANDROID_SERVERS_CAMERA_CAMERAPROVIDER_H
 
 #include <vector>
-#include <unordered_set>
+#include <set>
 #include <string>
 #include <mutex>
 
@@ -125,14 +125,16 @@ public:
      */
     int getCameraCount() const;
 
-    std::vector<std::string> getCameraDeviceIds() const;
-
     /**
      * Retrieve the number of API1 compatible cameras; these are internal and
      * backwards-compatible. This is the set of cameras that will be
-     * accessible via the old camera API.
-     * The return value may change dynamically due to external camera hotplug.
+     * accessible via the old camera API, with IDs in range of
+     * [0, getAPI1CompatibleCameraCount()-1]. This value is not expected to change dynamically.
      */
+    int getAPI1CompatibleCameraCount() const;
+
+    std::vector<std::string> getCameraDeviceIds() const;
+
     std::vector<std::string> getAPI1CompatibleCameraDeviceIds() const;
 
     /**
@@ -230,13 +232,6 @@ public:
             hardware::hidl_version minVersion = hardware::hidl_version{0,0},
             hardware::hidl_version maxVersion = hardware::hidl_version{1000,0}) const;
 
-    /*
-     * Check if a camera with staticInfo is a logical camera. And if yes, return
-     * the physical camera ids.
-     */
-    static bool isLogicalCamera(const CameraMetadata& staticInfo,
-            std::vector<std::string>* physicalCameraIds);
-
 private:
     // All private members, unless otherwise noted, expect mInterfaceMutex to be locked before use
     mutable std::mutex mInterfaceMutex;
@@ -319,9 +314,9 @@ private:
             static status_t setTorchMode(InterfaceT& interface, bool enabled);
         };
         std::vector<std::unique_ptr<DeviceInfo>> mDevices;
-        std::unordered_set<std::string> mUniqueCameraIds;
+        std::set<std::string> mUniqueCameraIds;
         int mUniqueDeviceCount;
-        std::vector<std::string> mUniqueAPI1CompatibleCameraIds;
+        std::set<std::string> mUniqueAPI1CompatibleCameraIds;
 
         // HALv1-specific camera fields, including the actual device interface
         struct DeviceInfo1 : public DeviceInfo {
@@ -371,8 +366,6 @@ private:
 
         CameraProviderManager *mManager;
 
-        bool mInitialized = false;
-
         // Templated method to instantiate the right kind of DeviceInfo and call the
         // right CameraProvider getCameraDeviceInterface_* method.
         template<class DeviceInfoT>
@@ -394,8 +387,6 @@ private:
 
         // Generate vendor tag id
         static metadata_vendor_id_t generateVendorTagId(const std::string &name);
-
-        void removeDevice(std::string id);
     };
 
     // Utility to find a DeviceInfo by ID; pointer is only valid while mInterfaceMutex is held
@@ -421,9 +412,6 @@ private:
     static const char* torchStatusToString(
         const hardware::camera::common::V1_0::TorchModeStatus&);
 
-    status_t getCameraCharacteristicsLocked(const std::string &id,
-            CameraMetadata* characteristics) const;
-    void filterLogicalCameraIdsLocked(std::vector<std::string>& deviceIds) const;
 };
 
 } // namespace android

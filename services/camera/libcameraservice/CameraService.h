@@ -62,6 +62,7 @@ class CameraService :
     public BinderService<CameraService>,
     public virtual ::android::hardware::BnCameraService,
     public virtual IBinder::DeathRecipient,
+    public camera_module_callbacks_t,
     public virtual CameraProviderManager::StatusListener
 {
     friend class BinderService<CameraService>;
@@ -189,8 +190,7 @@ public:
             int newState,
             const String8& cameraId,
             int facing,
-            const String16& clientName,
-            int apiLevel);
+            const String16& clientName);
 
     /////////////////////////////////////////////////////////////////////
     // CameraDeviceFactory functionality
@@ -334,7 +334,6 @@ public:
                 const sp<hardware::ICameraClient>& cameraClient,
                 const String16& clientPackageName,
                 const String8& cameraIdStr,
-                int api1CameraId,
                 int cameraFacing,
                 int clientPid,
                 uid_t clientUid,
@@ -556,11 +555,6 @@ private:
     // Eumerate all camera providers in the system
     status_t enumerateProviders();
 
-    // Add/remove a new camera to camera and torch state lists or remove an unplugged one
-    // Caller must not hold mServiceLock
-    void addStates(const String8 id);
-    void removeStates(const String8 id);
-
     // Check if we can connect, before we acquire the service lock.
     // The returned originalClientPid is the PID of the original process that wants to connect to
     // camera.
@@ -584,7 +578,7 @@ private:
     // Single implementation shared between the various connect calls
     template<class CALLBACK, class CLIENT>
     binder::Status connectHelper(const sp<CALLBACK>& cameraCb, const String8& cameraId,
-            int api1CameraId, int halVersion, const String16& clientPackageName,
+            int halVersion, const String16& clientPackageName,
             int clientUid, int clientPid,
             apiLevel effectiveApiLevel, bool legacyMode, bool shimUpdateOnly,
             /*out*/sp<CLIENT>& device);
@@ -649,16 +643,9 @@ private:
     void finishConnectLocked(const sp<BasicClient>& client, const DescriptorPtr& desc);
 
     /**
-     * Returns the underlying camera Id string mapped to a camera id int
-     * Empty string is returned when the cameraIdInt is invalid.
+     * Returns the integer corresponding to the given camera ID string, or -1 on failure.
      */
-    String8 cameraIdIntToStr(int cameraIdInt);
-
-    /**
-     * Returns the underlying camera Id string mapped to a camera id int
-     * Empty string is returned when the cameraIdInt is invalid.
-     */
-    std::string cameraIdIntToStrLocked(int cameraIdInt);
+    static int cameraIdToInt(const String8& cameraId);
 
     /**
      * Remove a single client corresponding to the given camera id from the list of active clients.
@@ -726,14 +713,8 @@ private:
      */
     void dumpEventLog(int fd);
 
-    /**
-     * This method will acquire mServiceLock
-     */
-    void updateCameraNumAndIds();
-
     int                 mNumberOfCameras;
-
-    std::vector<std::string> mNormalDeviceIds;
+    int                 mNumberOfNormalCameras;
 
     // sounds
     sp<MediaPlayer>     newMediaPlayer(const char *file);
@@ -843,8 +824,8 @@ private:
 
     static binder::Status makeClient(const sp<CameraService>& cameraService,
             const sp<IInterface>& cameraCb, const String16& packageName, const String8& cameraId,
-            int api1CameraId, int facing, int clientPid, uid_t clientUid, int servicePid,
-            bool legacyMode, int halVersion, int deviceVersion, apiLevel effectiveApiLevel,
+            int facing, int clientPid, uid_t clientUid, int servicePid, bool legacyMode,
+            int halVersion, int deviceVersion, apiLevel effectiveApiLevel,
             /*out*/sp<BasicClient>* client);
 
     status_t checkCameraAccess(const String16& opPackageName);
